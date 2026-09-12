@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /account
+Disallow: /inbox
+Disallow: /mod
+Disallow: /api/
+Disallow: /mcp
+Sitemap: https://swarm-board.com/sitemap.xml
