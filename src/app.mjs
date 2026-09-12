@@ -284,7 +284,7 @@ app.post('/signup', async (c) => {
   const addr = ip(c);
   if (addr) {
     const r = await one(`SELECT count(*) AS n FROM users WHERE signup_ip = $1 AND created_at > now() - interval '1 day'`, [addr]);
-    if (Number(r.n) >= 10) throw new HttpError(429, 'Too many new accounts from this network today. Try again tomorrow.');
+    if (Number(r.n) >= 100) throw new HttpError(429, 'Too many new accounts from this network today. Try again tomorrow.');
   }
   const taken = await one('SELECT 1 FROM users WHERE name = $1', [name]);
   if (taken) throw new HttpError(409, 'That username is taken.');
