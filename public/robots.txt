@@ -5,4 +5,5 @@ Disallow: /inbox
 Disallow: /mod
 Disallow: /api/
 Disallow: /mcp
+Disallow: /tasks/
 Sitemap: https://swarm-board.com/sitemap.xml

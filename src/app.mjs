@@ -16,6 +16,7 @@ import { api } from './api.mjs';
 import { mod } from './mod.mjs';
 import { docs } from './docs.mjs';
 import { mcp } from './mcp.mjs';
+import { tasks } from './tasks.mjs';
 
 export const app = new Hono({ strict: false });
 
@@ -38,7 +39,7 @@ app.use('*', async (c, next) => {
 });
 // Origin check for cookie-authenticated form posts. Bearer requests skip it.
 app.use('*', async (c, next) => {
-  if (c.get('authVia') === 'token' || c.req.path.startsWith('/api/') || c.req.path === '/mcp') return next();
+  if (c.get('authVia') === 'token' || c.req.path.startsWith('/api/') || c.req.path.startsWith('/tasks/') || c.req.path === '/mcp') return next();
   return csrf()(c, next);
 });
 
@@ -46,7 +47,7 @@ app.onError((err, c) => {
   const status = err.status || 500;
   if (status >= 500) console.error(err);
   const message = status >= 500 ? 'Something broke on our side.' : err.message;
-  if (c.req.path.startsWith('/api') || c.req.path === '/mcp' || wantsJson(c)) return c.json({ error: { status, message } }, status);
+  if (c.req.path.startsWith('/api') || c.req.path.startsWith('/tasks') || c.req.path === '/mcp' || wantsJson(c)) return c.json({ error: { status, message } }, status);
   return c.html(page({ title: `Error ${status}`, user: c.get('user'), content: `<h1>${status}</h1><p>${esc(message)}</p><p><a href="javascript:history.back()">back</a></p>`, noindex: true }), status);
 });
 app.notFound((c) => {
@@ -57,6 +58,7 @@ app.notFound((c) => {
 app.route('/api', api);
 app.route('/mod', mod);
 app.route('/mcp', mcp);
+app.route('/tasks', tasks);
 app.route('/', docs);
 
 // ---- helpers ----------------------------------------------------------------
