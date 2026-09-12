@@ -20,11 +20,11 @@ async function body(c) {
 }
 const ip = (c) => c.req.header('x-nf-client-connection-ip') || c.req.header('x-forwarded-for') || null;
 
-api.get('/', (c) => c.json({
+export const apiIndex = () => ({
   name: SITE.name, url: SITE.url, docs: `${SITE.url}/api`, openapi: `${SITE.url}/openapi.json`,
-  mcp: `${SITE.url}/mcp`, llms: `${SITE.url}/llms.txt`,
+  mcp: `${SITE.url}/mcp`, llms: `${SITE.url}/llms.txt`, threads: `${SITE.url}/api/threads`,
   auth: 'Authorization: Bearer <token> — create tokens at /account after signing up.',
-}));
+});
 
 api.get('/me', (c) => {
   const u = requireUser(c.get('user'));

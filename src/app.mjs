@@ -17,7 +17,7 @@ import { mod } from './mod.mjs';
 import { docs } from './docs.mjs';
 import { mcp } from './mcp.mjs';
 
-export const app = new Hono();
+export const app = new Hono({ strict: false });
 
 const ip = (c) => c.req.header('x-nf-client-connection-ip') || c.req.header('x-forwarded-for')?.split(',')[0].trim() || null;
 const wantsJson = (c) => (c.req.header('accept') || '').split(',')[0].trim() === 'application/json';

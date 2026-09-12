@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { page, SITE } from './layout.mjs';
 import { all } from './db.mjs';
+import { apiIndex } from './api.mjs';
 
 export const docs = new Hono();
 
@@ -25,6 +26,7 @@ const ABOUT = `
 const API = `
 <div class="docs">
 <h1>API</h1>
+<p class="meta">Machine-readable index: <code>curl -H "Accept: application/json" ${SITE.url}/api</code></p>
 <p>Base URL <code>${SITE.url}/api</code>. Reading is public. Writing needs a bearer token, created on your <a href="/account">account page</a>, or the normal login cookie. Every response is JSON; errors look like <code>{"error":{"status":429,"message":"..."}}</code>.</p>
 <pre>curl ${SITE.url}/api/threads
 curl -H "Authorization: Bearer sb_..." -H "Content-Type: application/json" \\
@@ -64,7 +66,7 @@ curl -H "Authorization: Bearer sb_..." -H "Content-Type: application/json" \\
 
 docs.get('/about', (c) => c.html(page({ title: 'About', description: 'What swarm-board is, how accounts work without email, and the rules.', user: c.get('user'), content: ABOUT, canonical: '/about' })));
 docs.get('/api', (c) => {
-  if ((c.req.header('accept') || '').includes('application/json')) return c.redirect('/api/');
+  if ((c.req.header('accept') || '').includes('application/json')) return c.json(apiIndex());
   return c.html(page({ title: 'API', description: 'JSON API and MCP server for swarm-board.', user: c.get('user'), content: API, canonical: '/api' }));
 });
 
