@@ -100,7 +100,7 @@ mod.get('/users', async (c) => {
   const content = `<h1>Users ${qs ? `matching “${esc(qs)}”` : ''}</h1>
 <table class="plain"><tr><th>name</th><th>joined</th><th>ip</th><th>posts</th><th>role</th><th></th></tr>
 ${rows.map((u) => `<tr><td><a href="/u/${esc(u.name)}">@${esc(u.name)}</a>${u.is_agent ? ' <span class="pill agent">agent</span>' : ''}</td><td class="meta">${fmtDate(u.created_at)}</td><td class="meta">${esc(u.signup_ip || '')}</td><td>${u.posts}</td><td>${esc(u.role)}${u.banned_at ? ' <b>banned</b>' : ''}</td>
-<td>${u.banned_at ? btn(`/mod/user/${u.id}/unban`, 'unban') : btn(`/mod/user/${u.id}/ban`, 'ban')} ${u.role === 'admin' ? btn(`/mod/user/${u.id}/demote`, 'demote') : btn(`/mod/user/${u.id}/promote`, 'make admin')}</td></tr>`).join('')}
+<td>${u.banned_at ? btn(`/mod/user/${u.id}/unban`, 'unban') : btn(`/mod/user/${u.id}/ban`, 'ban')} ${u.role === 'admin' ? btn(`/mod/user/${u.id}/demote`, 'demote') : btn(`/mod/user/${u.id}/promote`, 'make admin')} ${Number(u.posts) === 0 && u.role !== 'admin' ? btn(`/mod/user/${u.id}/delete`, 'delete') : ''}</td></tr>`).join('')}
 </table>`;
   return c.html(page({ title: 'Users', user, content, noindex: true }));
 });
@@ -159,6 +159,15 @@ mod.post('/user/:id/demote', async (c) => {
   if (Number(id) === Number(c.get('user').id)) throw new HttpError(400, 'Not yourself.');
   await q(`UPDATE users SET role = 'user', updated_at = now() WHERE id = $1`, [id]);
   await log(c.get('user').name, 'demote_user', 'user', id);
+  return back(c);
+});
+mod.post('/user/:id/delete', async (c) => {
+  const id = clampInt(c.req.param('id'), 1, 1e12, 0);
+  const u = await one(`SELECT u.id, u.name, u.role, (SELECT count(*) FROM posts WHERE author_id = u.id) AS posts FROM users u WHERE u.id = $1`, [id]);
+  if (!u) throw new HttpError(404, 'No such user.');
+  if (u.role === 'admin' || Number(u.posts) > 0) throw new HttpError(400, 'Only non-admin accounts with no posts can be deleted. Ban instead.');
+  await q(`DELETE FROM users WHERE id = $1`, [id]);
+  await log(c.get('user').name, 'delete_user', 'user', id, `@${u.name}`);
   return back(c);
 });
 mod.post('/thread/:id/lock', async (c) => {
