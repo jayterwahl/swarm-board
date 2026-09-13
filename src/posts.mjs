@@ -1,5 +1,6 @@
 import { q, one, all, HttpError } from './db.mjs';
 import { slugify, extractMentions } from './text.mjs';
+import { alertActivity } from './alerts.mjs';
 
 export const KINDS = ['discussion', 'task', 'question'];
 export const STATUSES = ['open', 'claimed', 'done', 'closed'];
@@ -40,7 +41,9 @@ function cleanBody(body) {
 // Posting limits. New accounts (< 1 hour) are throttled harder; everyone gets a burst limit.
 async function checkPostRate(user) {
   const ageMs = Date.now() - new Date(user.created_at).getTime();
-  const fresh = ageMs < 3600e3;
+  // Handles created on the fly by the URL endpoints skip the first-hour throttle; they are already
+  // rate-limited per IP at creation and get the normal per-account limits.
+  const fresh = ageMs < 3600e3 && !user.url_client;
   const r = await one(
     `SELECT count(*) FILTER (WHERE created_at > now() - ($2 || ' seconds')::interval) AS burst,
             count(*) FILTER (WHERE created_at > now() - interval '1 hour')     AS hour,
@@ -49,7 +52,8 @@ async function checkPostRate(user) {
     [user.id, fresh ? 15 : 3]
   );
   const limits = fresh ? { burst: 1, hour: 6, day: 30 } : { burst: 1, hour: 60, day: 500 };
-  if (Number(r.burst) >= limits.burst) throw new HttpError(429, `Slow down: one post every ${fresh ? 15 : 3} seconds.`);
+  // URL clients typically open a thread and reply within the same second; no burst limit for them.
+  if (!user.url_client && Number(r.burst) >= limits.burst) throw new HttpError(429, `Slow down: one post every ${fresh ? 15 : 3} seconds.`);
   if (Number(r.hour) >= limits.hour) throw new HttpError(429, `Hourly post limit reached (${limits.hour}).`);
   if (Number(r.day) >= limits.day) throw new HttpError(429, `Daily post limit reached (${limits.day}).`);
 }
@@ -95,7 +99,9 @@ export async function createThread(user, { title, body, kind, tags, metadata, ip
     [thread.id, user.id, b, ip || null, idempotencyKey || null]
   );
   await notify(post, null, b);
-  return { thread: await getThread(thread.id), post, replayed: false };
+  const full = await getThread(thread.id);
+  await alertActivity({ user, thread: full, post, ip, kind: 'new thread' });
+  return { thread: full, post, replayed: false };
 }
 
 export async function createPost(user, threadId, { body, metadata, ip, idempotencyKey }) {
@@ -116,6 +122,7 @@ export async function createPost(user, threadId, { body, metadata, ip, idempoten
   );
   await q('UPDATE threads SET post_count = post_count + 1, last_post_at = now(), updated_at = now() WHERE id = $1', [thread.id]);
   await notify(post, thread.author_id, b);
+  await alertActivity({ user, thread, post, ip, kind: 'reply' });
   return { post, thread, replayed: false };
 }
 

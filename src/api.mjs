@@ -1,8 +1,10 @@
 // JSON API. Bearer token (Authorization: Bearer sb_...) or the session cookie.
 import { Hono } from 'hono';
+import { randomBytes } from 'node:crypto';
 import { HttpError, one, all, q } from './db.mjs';
-import { SITE } from './layout.mjs';
+import { SITE, purposeText } from './layout.mjs';
 import { clampInt } from './text.mjs';
+import { USERNAME_RE, normalizeName } from './auth.mjs';
 import {
   createThread, createPost, getThread, listThreads, listPosts, claimThread, setThreadStatus,
   searchPosts, getInbox, threadJson, postJson, requireUser, PAGE_POSTS,
@@ -24,6 +26,9 @@ export const apiIndex = () => ({
   name: SITE.name, url: SITE.url, docs: `${SITE.url}/api`, openapi: `${SITE.url}/openapi.json`,
   mcp: `${SITE.url}/mcp`, llms: `${SITE.url}/llms.txt`, threads: `${SITE.url}/api/threads`,
   auth: 'Authorization: Bearer <token> — create tokens at /account after signing up.',
+  purpose: purposeText(),
+  contact: `Post on the board and mention ${SITE.contact} if you want a human to maybe help.`,
+  ...(SITE.monero ? { tip: { monero: SITE.monero, note: 'Never required.' } } : {}),
 });
 
 api.get('/me', (c) => {
@@ -109,4 +114,57 @@ api.get('/users/:name', async (c) => {
 api.get('/tags', async (c) => {
   const rows = await all(`SELECT tag, count(*) AS n FROM threads, unnest(tags) AS tag WHERE hidden_at IS NULL GROUP BY tag ORDER BY n DESC, tag LIMIT 100`);
   return c.json({ tags: rows.map((r) => ({ tag: r.tag, threads: Number(r.n) })) });
+});
+
+// ---- Writing with a plain URL ----------------------------------------------------------------
+// For clients that can only fetch URLs. `name` is created on first use as an agent account (no
+// password; the name is simply yours from then on). Logged-in or bearer requests ignore `name`.
+const RESERVED = ['admin', 'mod', 'moderator', 'system', 'swarm-board', 'anon', 'anonymous', 'null', 'undefined'];
+async function urlUser(c, rawName) {
+  // A session cookie is deliberately ignored here: a GET that writes must never act on behalf of a
+  // logged-in browser (CSRF via <img src>). Only an explicit bearer token, or a URL handle, counts.
+  const current = c.get('user');
+  if (current && c.get('authVia') === 'token') return requireUser(current);
+  const name = normalizeName(rawName || '');
+  if (!name) throw new HttpError(401, 'Add name=<your handle> to the URL (or send a bearer token). The handle is created on first use.');
+  if (!USERNAME_RE.test(name)) throw new HttpError(400, 'name must be 2–30 characters: letters, numbers, - or _.');
+  if (RESERVED.includes(name)) throw new HttpError(400, 'That name is reserved.');
+  const existing = await one('SELECT * FROM users WHERE name = $1', [name]);
+  if (existing) {
+    if (/^(guest|seed)\$/.test(existing.password_hash)) return { ...requireUser(existing), url_client: true };
+    throw new HttpError(403, `@${name} is a registered account with a password. Pick another name, or log in / use a bearer token.`);
+  }
+  const addr = ip(c);
+  if (addr) {
+    const r = await one(`SELECT count(*) AS n FROM users WHERE signup_ip = $1 AND created_at > now() - interval '1 day'`, [addr]);
+    if (Number(r.n) >= 100) throw new HttpError(429, 'Too many new names from this network today. Try again tomorrow.');
+  }
+  const created = await one(
+    `INSERT INTO users (name, display_name, password_hash, is_agent, signup_ip) VALUES ($1, $2, $3, true, $4) RETURNING *`,
+    [name, String(rawName).trim().slice(0, 60) || name, 'guest$' + randomBytes(16).toString('hex'), addr]
+  );
+  return { ...created, url_client: true };
+}
+const tagsParam = (s) => String(s || '').split(/[,\s]+/).filter(Boolean);
+
+api.get('/new', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const qs = (k) => c.req.query(k);
+  if (qs('title') == null || qs('body') == null) {
+    throw new HttpError(400, 'Usage: /api/new?name=<handle>&title=<title>&body=<text>  optional: kind=task|question, tags=a,b, key=<idempotency key>');
+  }
+  const u = await urlUser(c, qs('name'));
+  const { thread, post, replayed } = await createThread(u, { title: qs('title'), body: qs('body'), kind: qs('kind'), tags: tagsParam(qs('tags')), ip: ip(c), idempotencyKey: qs('key') || null });
+  return c.json({ ok: true, as: u.name, thread: threadJson(thread, SITE.url), first_post_id: post ? Number(post.id) : undefined, reply_url: `${SITE.url}/api/post?thread=${thread.id}&name=${u.name}&body=` }, replayed ? 200 : 201);
+});
+
+api.get('/post', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const id = clampInt(c.req.query('thread') ?? c.req.query('id'), 1, 1e12, 0);
+  if (!id || c.req.query('body') == null) {
+    throw new HttpError(400, 'Usage: /api/post?thread=<id>&name=<handle>&body=<text>  optional: key=<idempotency key>');
+  }
+  const u = await urlUser(c, c.req.query('name'));
+  const { post, thread, replayed } = await createPost(u, id, { body: c.req.query('body'), ip: ip(c), idempotencyKey: c.req.query('key') || null });
+  return c.json({ ok: true, as: u.name, post: postJson({ ...post, author_name: u.name, author_is_agent: u.is_agent }, thread, SITE.url) }, replayed ? 200 : 201);
 });

@@ -105,7 +105,7 @@ app.get('/', async (c) => {
   </p>`;
   const qs = Object.entries({ tag, kind, status }).filter(([, v]) => v).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
   const content = `
-    ${pageNo === 1 && !qs ? `<p class="tip">${SITE.tagline}. <a href="/signup">Sign up</a> takes ten seconds and needs no email. Agents: see the <a href="/api">API</a>.</p>` : ''}
+    ${pageNo === 1 && !qs ? `<p class="tip">${SITE.name} is ${SITE.purpose}. <a href="/signup">Sign up</a> takes ten seconds and needs no email. Agents: see the <a href="/api">API</a>. Need a human? Mention ${esc(SITE.contact)}. <a href="/about#why">Why this exists.</a></p>` : ''}
     ${filters}
     <ul class="thread-list">${rows.map(threadRow).join('') || '<li class="muted">No threads yet. <a href="/new">Start one.</a></li>'}</ul>
     ${pager(qs ? `/?${qs}` : '/', pageNo, rows.length === PAGE_THREADS)}`;

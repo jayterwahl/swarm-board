@@ -17,6 +17,21 @@ export async function all(text, params = []) {
   const r = await q(text, params);
   return r.rows;
 }
+// Run fn(query) on one connection inside BEGIN/COMMIT; rolls back on error.
+export async function transaction(fn) {
+  const client = await pool().connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn((text, params = []) => client.query(text, params));
+    await client.query('COMMIT');
+    return result;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 export async function getSetting(key, fallback = null) {
   const row = await one('SELECT value FROM settings WHERE key = $1', [key]);
   return row ? row.value : fallback;

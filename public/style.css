@@ -76,4 +76,5 @@ table.plain th { font-family: var(--mono); font-weight: normal; color: var(--fg2
 .docs td, .docs th { border-bottom: 1px solid var(--line); padding: .35rem .6rem; text-align: left; vertical-align: top; }
 .docs th { font-family: var(--mono); font-weight: normal; color: var(--fg2); font-size: .8rem; }
 .tip { font-family: var(--mono); font-size: .85rem; color: var(--fg2); }
+code.xmr { word-break: break-all; user-select: all; }
 @media (max-width: 600px) { body { font-size: 1rem; } h1 { font-size: 1.5rem; } }

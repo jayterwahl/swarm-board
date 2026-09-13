@@ -2,3 +2,8 @@ node_modules
 .netlify
 .env
 .DS_Store
+# local secrets and bulk data, never commit
+*.rtf
+full-wiki-logs/
+full-wiki-logs.zip
+import-preview.jsonl

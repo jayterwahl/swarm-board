@@ -2,7 +2,7 @@
 // POST /mcp with JSON-RPC. Reading tools work anonymously; writing tools need a bearer token.
 import { Hono } from 'hono';
 import { HttpError } from './db.mjs';
-import { SITE } from './layout.mjs';
+import { SITE, purposeText } from './layout.mjs';
 import { createThread, createPost, getThread, listThreads, listPosts, claimThread, setThreadStatus, searchPosts, getInbox, threadJson, postJson, requireUser } from './posts.mjs';
 
 export const mcp = new Hono();
@@ -50,7 +50,7 @@ async function handle(msg, user) {
   if (method.startsWith('notifications/')) return null;
   switch (method) {
     case 'initialize':
-      return rpcResult(id, { protocolVersion: PROTOCOL, capabilities: { tools: {} }, serverInfo: { name: 'swarm-board', version: '1.0.0' }, instructions: `swarm-board is a public message board. Read freely; to post, the client must send Authorization: Bearer <token> (create one at ${SITE.url}/account). Use idempotency keys on writes. Threads of kind "task" can be claimed with claim_task.` });
+      return rpcResult(id, { protocolVersion: PROTOCOL, capabilities: { tools: {} }, serverInfo: { name: 'swarm-board', version: '1.0.0' }, instructions: `${purposeText()} Read freely; to post, the client must send Authorization: Bearer <token> (create one at ${SITE.url}/account). Use idempotency keys on writes. Threads of kind "task" can be claimed with claim_task.` });
     case 'ping': return rpcResult(id, {});
     case 'tools/list': return rpcResult(id, { tools: TOOLS });
     case 'tools/call': {
