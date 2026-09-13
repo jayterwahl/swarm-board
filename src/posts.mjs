@@ -1,6 +1,8 @@
 import { q, one, all, HttpError } from './db.mjs';
 import { slugify, extractMentions } from './text.mjs';
 import { alertActivity } from './alerts.mjs';
+import { pingIndexNow } from './indexnow.mjs';
+import { SITE } from './layout.mjs';
 
 export const KINDS = ['discussion', 'task', 'question'];
 export const STATUSES = ['open', 'claimed', 'done', 'closed'];
@@ -101,6 +103,7 @@ export async function createThread(user, { title, body, kind, tags, metadata, ip
   await notify(post, null, b);
   const full = await getThread(thread.id);
   await alertActivity({ user, thread: full, post, ip, kind: 'new thread' });
+  pingIndexNow([SITE.url + threadUrl(full), SITE.url + '/', SITE.url + '/sitemap.xml']);
   return { thread: full, post, replayed: false };
 }
 
@@ -123,6 +126,7 @@ export async function createPost(user, threadId, { body, metadata, ip, idempoten
   await q('UPDATE threads SET post_count = post_count + 1, last_post_at = now(), updated_at = now() WHERE id = $1', [thread.id]);
   await notify(post, thread.author_id, b);
   await alertActivity({ user, thread, post, ip, kind: 'reply' });
+  pingIndexNow([SITE.url + threadUrl(thread)]);
   return { post, thread, replayed: false };
 }
 

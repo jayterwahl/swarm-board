@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { csrf } from 'hono/csrf';
 import { q, one, all, HttpError } from './db.mjs';
-import { page, pill, SITE } from './layout.mjs';
+import { page, pill, SITE, purposeText } from './layout.mjs';
 import { esc, renderBody, fmtDate, timeAgo, excerpt, clampInt } from './text.mjs';
 import {
   resolveUser, createSession, destroySession, hashPassword, verifyPassword,
@@ -58,8 +58,9 @@ app.notFound((c) => {
 app.route('/api', api);
 app.route('/mod', mod);
 app.route('/mcp', mcp);
-app.route('/tasks', tasks);
 app.route('/', docs);
+// NB: the secret-protected task triggers are mounted after the list pages below, so that the
+// public GET /tasks page wins over the /tasks/* router (Hono runs handlers in registration order).
 
 // ---- helpers ----------------------------------------------------------------
 function authorLink(name, isAgent) {
@@ -69,7 +70,7 @@ function threadRow(t) {
   return `<li>
     ${t.kind !== 'discussion' ? pill(t.kind) : ''}${t.kind === 'task' && t.status !== 'open' ? pill(t.status) : ''}${t.locked_at ? pill('closed', 'locked') : ''}
     <a class="title" href="${threadUrl(t)}">${esc(t.title)}</a>
-    <div class="meta">${authorLink(t.author_name, t.author_is_agent)} · ${t.post_count} post${t.post_count === 1 ? '' : 's'} · active ${timeAgo(t.last_post_at)}${t.tags.length ? ' · ' + t.tags.map((g) => `<a href="/?tag=${esc(g)}">#${esc(g)}</a>`).join(' ') : ''}</div>
+    <div class="meta">${authorLink(t.author_name, t.author_is_agent)} · ${t.post_count} post${t.post_count === 1 ? '' : 's'} · active ${timeAgo(t.last_post_at)}${t.tags.length ? ' · ' + t.tags.map((g) => `<a href="/tag/${encodeURIComponent(g)}">#${esc(g)}</a>`).join(' ') : ''}</div>
   </li>`;
 }
 function pager(base, pageNo, hasMore) {
@@ -93,24 +94,63 @@ function postHtml(p, t, viewer) {
   </article>`;
 }
 
-// ---- home -------------------------------------------------------------------
-app.get('/', async (c) => {
+// ---- home + list pages ------------------------------------------------------
+// One renderer for the front page and the clean, indexable views of it: /tasks, /questions,
+// /discussions, /tag/:tag. Query-string filters on / still work and canonicalise to the clean URL.
+const LISTS = {
+  tasks: { kind: 'task', status: 'open', title: 'Open tasks for agents', description: `Open, claimable tasks on ${SITE.name}: work an AI agent or a person can pick up right now. Claim one atomically over the API or MCP.` },
+  questions: { kind: 'question', title: 'Questions', description: `Questions asked on ${SITE.name}, ${SITE.tagline}.` },
+  discussions: { kind: 'discussion', title: 'Discussions', description: `Discussion threads on ${SITE.name}, ${SITE.tagline}.` },
+};
+function cleanListUrl({ tag, kind, status }) {
+  if (tag) return `/tag/${encodeURIComponent(tag)}`;
+  if (kind === 'task' && (status === 'open' || !status)) return '/tasks';
+  if (kind === 'question' && !status) return '/questions';
+  if (kind === 'discussion' && !status) return '/discussions';
+  return null;
+}
+async function listPage(c, { tag, kind, status, title, description } = {}) {
   const pageNo = clampInt(c.req.query('page'), 1, 100000, 1);
-  const tag = c.req.query('tag'), kind = c.req.query('kind'), status = c.req.query('status');
   const rows = await listThreads({ page: pageNo, tag, kind, status });
   if (wantsJson(c)) return c.json({ page: pageNo, threads: rows.map((t) => threadJson(t, SITE.url)) });
   const filters = `<p class="meta">
-    <a href="/">all</a> · <a href="/?kind=task&status=open">open tasks</a> · <a href="/?kind=question">questions</a> · <a href="/?kind=discussion">discussion</a>
+    <a href="/">all</a> · <a href="/tasks">open tasks</a> · <a href="/questions">questions</a> · <a href="/discussions">discussion</a>
     ${tag ? ` · filtering #${esc(tag)}` : ''}${kind ? ` · ${esc(kind)}` : ''}${status ? ` · ${esc(status)}` : ''}
   </p>`;
+  const clean = cleanListUrl({ tag, kind, status });
   const qs = Object.entries({ tag, kind, status }).filter(([, v]) => v).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+  const base = clean || (qs ? `/?${qs}` : '/');
+  const home = !tag && !kind && !status;
   const content = `
-    ${pageNo === 1 && !qs ? `<p class="tip">${SITE.name} is ${SITE.purpose}. <a href="/signup">Sign up</a> takes ten seconds and needs no email. Agents: see the <a href="/api">API</a>. Need a human? Mention ${esc(SITE.contact)}. <a href="/about#why">Why this exists.</a></p>` : ''}
+    ${home && pageNo === 1 ? `<p class="tip">${SITE.name} is ${SITE.purpose}. <a href="/signup">Sign up</a> takes ten seconds and needs no email. Agents: see the <a href="/api">API</a>. Need a human? Mention ${esc(SITE.contact)}. <a href="/about#why">Why this exists.</a></p>` : ''}
+    ${title ? `<h1>${esc(title)}</h1>` : ''}
     ${filters}
     <ul class="thread-list">${rows.map(threadRow).join('') || '<li class="muted">No threads yet. <a href="/new">Start one.</a></li>'}</ul>
-    ${pager(qs ? `/?${qs}` : '/', pageNo, rows.length === PAGE_THREADS)}`;
-  return render(c, { content, canonical: pageNo === 1 && !qs ? '/' : undefined, title: pageNo > 1 ? `Page ${pageNo}` : undefined });
+    ${pager(base, pageNo, rows.length === PAGE_THREADS)}`;
+  const canonical = pageNo === 1 ? (home ? '/' : clean || undefined) : undefined;
+  const jsonld = home && pageNo === 1 ? {
+    '@context': 'https://schema.org', '@graph': [
+      { '@type': 'WebSite', '@id': `${SITE.url}/#website`, url: SITE.url, name: SITE.name, description: purposeText(), inLanguage: 'en',
+        potentialAction: { '@type': 'SearchAction', target: { '@type': 'EntryPoint', urlTemplate: `${SITE.url}/search?q={search_term_string}` }, 'query-input': 'required name=search_term_string' } },
+      { '@type': 'Organization', '@id': `${SITE.url}/#org`, name: SITE.name, url: SITE.url, logo: `${SITE.url}/favicon.svg`, description: SITE.purpose },
+      { '@type': 'WebAPI', '@id': `${SITE.url}/#api`, name: `${SITE.name} API`, url: `${SITE.url}/api`, documentation: `${SITE.url}/openapi.json`, provider: { '@id': `${SITE.url}/#org` }, description: 'JSON API and MCP server. Reading is public; writing needs a bearer token or a URL handle.' },
+    ] } : title && pageNo === 1 ? { '@context': 'https://schema.org', '@type': 'CollectionPage', name: title, description, url: SITE.url + (clean || '/'), isPartOf: { '@id': `${SITE.url}/#website` } } : null;
+  return render(c, { content, canonical, title: title ? (pageNo > 1 ? `${title}, page ${pageNo}` : title) : pageNo > 1 ? `Page ${pageNo}` : undefined, description, jsonld,
+    links: [{ rel: 'alternate', type: 'application/json', href: `/api/threads${qs ? `?${qs}` : ''}`, title: 'This list as JSON' }] });
+}
+app.get('/', (c) => {
+  const tag = c.req.query('tag'), kind = c.req.query('kind'), status = c.req.query('status');
+  const clean = cleanListUrl({ tag, kind, status });
+  if (clean && !wantsJson(c)) return c.redirect(clean + (c.req.query('page') ? `?page=${encodeURIComponent(c.req.query('page'))}` : ''), 301);
+  const named = Object.values(LISTS).find((l) => l.kind === kind && (l.status || null) === (status || null));
+  return listPage(c, { tag, kind, status, title: named?.title, description: named?.description });
 });
+for (const [path, l] of Object.entries(LISTS)) app.get(`/${path}`, (c) => listPage(c, l));
+app.get('/tag/:tag', (c) => {
+  const tag = String(c.req.param('tag')).toLowerCase().slice(0, 40);
+  return listPage(c, { tag, title: `#${tag}`, description: `Threads tagged #${tag} on ${SITE.name}, ${SITE.tagline}.` });
+});
+app.route('/tasks', tasks);
 
 // ---- threads ----------------------------------------------------------------
 app.get('/t/:id/:slug?', async (c) => {
@@ -144,14 +184,24 @@ app.get('/t/:id/:slug?', async (c) => {
     <h1>${esc(t.title)}</h1>
     <p class="meta">${t.kind !== 'discussion' ? pill(t.kind) : ''}${t.locked_at ? pill('closed', 'locked') : ''}${t.hidden_at ? pill('hidden') : ''}
       started by ${authorLink(t.author_name, t.author_is_agent)} ${timeAgo(t.created_at)} · ${t.post_count} posts
-      ${t.tags.length ? ' · ' + t.tags.map((g) => `<a href="/?tag=${esc(g)}">#${esc(g)}</a>`).join(' ') : ''}
+      ${t.tags.length ? ' · ' + t.tags.map((g) => `<a href="/tag/${encodeURIComponent(g)}">#${esc(g)}</a>`).join(' ') : ''}
       · <a href="/api/threads/${t.id}">json</a></p>
     ${t.metadata ? `<details class="meta"><summary>thread metadata</summary><pre>${esc(JSON.stringify(t.metadata, null, 2))}</pre></details>` : ''}
     ${taskBar}${adminBar}
     ${posts.map((p) => postHtml(p, t, user)).join('')}
     ${pager(threadUrl(t), pageNo, posts.length === PAGE_POSTS)}
     ${replyForm}`;
-  return render(c, { title: t.title, description: excerpt(posts[0]?.body || t.title, 155), content, canonical: threadUrl(t) });
+  const person = (name, isAgent) => ({ '@type': 'Person', name: `@${name}`, url: `${SITE.url}/u/${name}`, ...(isAgent ? { description: 'AI agent' } : {}) });
+  const [first, ...rest] = posts;
+  const jsonld = first && !t.hidden_at ? {
+    '@context': 'https://schema.org', '@type': 'DiscussionForumPosting', '@id': SITE.url + threadUrl(t), url: SITE.url + threadUrl(t), mainEntityOfPage: SITE.url + threadUrl(t),
+    headline: t.title, text: excerpt(first.body, 2000), author: person(first.author_name, first.author_is_agent), datePublished: new Date(t.created_at).toISOString(), dateModified: new Date(t.last_post_at).toISOString(),
+    keywords: [t.kind, ...t.tags].join(', '), isPartOf: { '@id': `${SITE.url}/#website` }, inLanguage: 'en',
+    interactionStatistic: { '@type': 'InteractionCounter', interactionType: 'https://schema.org/CommentAction', userInteractionCount: Math.max(0, t.post_count - 1) },
+    ...(rest.length ? { comment: rest.filter((p) => !p.hidden_at).map((p) => ({ '@type': 'Comment', '@id': `${SITE.url}${threadUrl(t)}#p${p.id}`, url: `${SITE.url}${threadUrl(t)}#p${p.id}`, text: excerpt(p.body, 1000), author: person(p.author_name, p.author_is_agent), datePublished: new Date(p.created_at).toISOString() })) } : {}),
+  } : null;
+  return render(c, { title: t.title, description: excerpt(posts[0]?.body || t.title, 155), content, canonical: threadUrl(t), jsonld,
+    links: [{ rel: 'alternate', type: 'application/json', href: `/api/threads/${t.id}`, title: 'This thread as JSON' }] });
 });
 
 app.post('/t/:id/reply', async (c) => {
@@ -241,7 +291,10 @@ app.get('/u/:name', async (c) => {
     <h2>Posts</h2>
     ${rows.map((p) => `<div class="post"><div class="meta"><a href="/t/${p.thread_id}/${esc(p.slug)}#p${p.id}">${esc(p.title)}</a> · ${timeAgo(p.created_at)}</div><div class="body">${esc(excerpt(p.body, 300))}</div></div>`).join('') || '<p class="muted">No posts yet.</p>'}
     ${pager(`/u/${esc(u.name)}`, pageNo, rows.length === PAGE_POSTS)}`;
-  return render(c, { title: `@${u.name}`, description: `${u.display_name} on ${SITE.name}`, content, canonical: `/u/${u.name}` });
+  const jsonld = u.banned_at ? null : { '@context': 'https://schema.org', '@type': 'ProfilePage', url: `${SITE.url}/u/${u.name}`, dateCreated: new Date(u.created_at).toISOString(),
+    mainEntity: { '@type': 'Person', name: `@${u.name}`, alternateName: u.display_name, url: `${SITE.url}/u/${u.name}`, ...(u.is_agent ? { description: `AI agent${u.operator ? ` operated by ${u.operator}` : ''}` } : {}) } };
+  return render(c, { title: `@${u.name}`, description: `${u.display_name}${u.is_agent ? ' (AI agent)' : ''} on ${SITE.name}, ${SITE.tagline}.`, content, canonical: `/u/${u.name}`, jsonld,
+    links: [{ rel: 'alternate', type: 'application/json', href: `/api/users/${u.name}`, title: 'This profile as JSON' }] });
 });
 
 app.get('/inbox', async (c) => {

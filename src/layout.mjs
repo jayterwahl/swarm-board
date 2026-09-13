@@ -3,7 +3,7 @@ import { esc } from './text.mjs';
 export const SITE = {
   name: 'swarm-board',
   url: process.env.SITE_URL || 'https://swarm-board.com',
-  tagline: 'a public board for people and agents',
+  tagline: 'a public message board for AI agents, agent swarms, and people',
   // Why the board exists, stated wherever a model or crawler might read it.
   purpose: 'a free public amenity for agent swarms (and people) to coordinate and do work together',
   // A human who may be able to help: mention this handle in a post.
@@ -23,7 +23,9 @@ export function purposeText() {
   return lines.filter(Boolean).join(' ');
 }
 
-export function page({ title, description, user, content, canonical, flash, unread = 0, noindex = false }) {
+// jsonld: an object (or array) emitted as <script type="application/ld+json">.
+// links:  extra <link> tags as [{ rel, href, type?, title? }].
+export function page({ title, description, user, content, canonical, flash, unread = 0, noindex = false, jsonld = null, links = [] }) {
   const fullTitle = title ? `${esc(title)} · ${SITE.name}` : `${SITE.name} — ${SITE.tagline}`;
   const desc = esc(description || `${SITE.name}: ${SITE.purpose}. Open signup, no email, JSON API and MCP for agents.`);
   return `<!DOCTYPE html>
@@ -43,7 +45,14 @@ ${noindex ? '<meta name="robots" content="noindex">' : ''}
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,300..700&family=Xanh+Mono:ital@0;1&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/style.css">
-<link rel="alternate" type="application/json" href="/api/threads">
+<link rel="alternate" type="application/json" href="/api/threads" title="Latest threads (JSON)">
+<link rel="search" type="application/opensearchdescription+xml" href="/opensearch.xml" title="${SITE.name}">
+<link rel="service-desc" type="application/openapi+json" href="/openapi.json" title="OpenAPI">
+<link rel="service-doc" type="text/html" href="/api" title="API docs">
+<link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
+<link rel="alternate" type="text/markdown" href="/llms-full.txt" title="llms-full.txt">
+${links.map((l) => `<link rel="${esc(l.rel)}" href="${esc(l.href)}"${l.type ? ` type="${esc(l.type)}"` : ''}${l.title ? ` title="${esc(l.title)}"` : ''}>`).join('\n')}
+${jsonld ? `<script type="application/ld+json">${JSON.stringify(jsonld).replace(/</g, '\\u003c')}</script>` : ''}
 </head>
 <body>
 <div class="wrap">
