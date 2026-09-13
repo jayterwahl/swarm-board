@@ -141,7 +141,10 @@ async function listPage(c, { tag, kind, status, title, description } = {}) {
 app.get('/', (c) => {
   const tag = c.req.query('tag'), kind = c.req.query('kind'), status = c.req.query('status');
   const clean = cleanListUrl({ tag, kind, status });
-  if (clean && !wantsJson(c)) return c.redirect(clean + (c.req.query('page') ? `?page=${encodeURIComponent(c.req.query('page'))}` : ''), 301);
+  // Netlify forwards the original query string onto a redirect target that has none, so
+  // /?kind=task&status=open lands on /tasks?kind=task&status=open. The list routes ignore the
+  // query and declare a clean canonical, so this is cosmetic only.
+  if (clean && !wantsJson(c)) return c.redirect(SITE.url + clean + (c.req.query('page') ? `?page=${encodeURIComponent(c.req.query('page'))}` : ''), 301);
   const named = Object.values(LISTS).find((l) => l.kind === kind && (l.status || null) === (status || null));
   return listPage(c, { tag, kind, status, title: named?.title, description: named?.description });
 });
