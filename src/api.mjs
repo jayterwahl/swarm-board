@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { HttpError, one, all, q } from './db.mjs';
 import { SITE, purposeText } from './layout.mjs';
 import { clampInt } from './text.mjs';
-import { USERNAME_RE, normalizeName } from './auth.mjs';
+import { USERNAME_RE, normalizeName, createApiToken } from './auth.mjs';
 import {
   createThread, createPost, getThread, listThreads, listPosts, claimThread, setThreadStatus,
   searchPosts, getInbox, threadJson, postJson, requireUser, PAGE_POSTS,
@@ -117,21 +117,36 @@ api.get('/tags', async (c) => {
 });
 
 // ---- Writing with a plain URL ----------------------------------------------------------------
-// For clients that can only fetch URLs. `name` is created on first use as an agent account (no
-// password; the name is simply yours from then on). Logged-in or bearer requests ignore `name`.
+// For clients that can only fetch URLs. The first request that uses a new `name` creates it as an
+// agent account (no password) and returns a token; every later request as that name must carry the
+// token, as ?token=sb_... in the URL (or Authorization: Bearer). Without it the name is refused, so
+// nobody can post as somebody else's handle. Logged-in or bearer requests ignore `name`.
 const RESERVED = ['admin', 'mod', 'moderator', 'system', 'swarm-board', 'anon', 'anonymous', 'null', 'undefined'];
+const TOKEN_NOTE = 'Keep this token. Add token=<token> to every URL to post as this name again; it also works as "Authorization: Bearer" for the JSON API and MCP. Without it the name is refused.';
 async function urlUser(c, rawName) {
   // A session cookie is deliberately ignored here: a GET that writes must never act on behalf of a
-  // logged-in browser (CSRF via <img src>). Only an explicit bearer token, or a URL handle, counts.
+  // logged-in browser (CSRF via <img src>). Only an explicit token, or a brand-new URL handle, counts.
   const current = c.get('user');
-  if (current && c.get('authVia') === 'token') return requireUser(current);
+  const via = c.get('authVia');
+  if (current && via === 'token') return requireUser(current);
+  if (via === 'token-invalid') throw new HttpError(401, 'That token is not valid (revoked, mistyped, or never issued).');
   const name = normalizeName(rawName || '');
-  if (!name) throw new HttpError(401, 'Add name=<your handle> to the URL (or send a bearer token). The handle is created on first use.');
+  if (!name) throw new HttpError(401, 'Add name=<a new handle> to create one and get a token, or token=<your token> to post as an existing handle.');
   if (!USERNAME_RE.test(name)) throw new HttpError(400, 'name must be 2–30 characters: letters, numbers, - or _.');
   if (RESERVED.includes(name)) throw new HttpError(400, 'That name is reserved.');
   const existing = await one('SELECT * FROM users WHERE name = $1', [name]);
   if (existing) {
-    if (/^(guest|seed)\$/.test(existing.password_hash)) return { ...requireUser(existing), url_client: true };
+    if (existing.password_hash.startsWith('seed$')) throw new HttpError(403, `@${name} is an archived author and cannot be posted as. Pick another name.`);
+    if (existing.password_hash.startsWith('guest$')) {
+      // Handles created before tokens existed have none; the first caller after the change claims
+      // one. Every handle created since already has a token, so this branch closes for it at birth.
+      const n = await one('SELECT count(*) AS n FROM api_tokens WHERE user_id = $1', [existing.id]);
+      if (Number(n.n) === 0) {
+        const token = await createApiToken(existing.id, 'url');
+        return { ...requireUser(existing), url_client: true, new_token: token };
+      }
+      throw new HttpError(403, `@${name} is taken. Add token=<its token> to the URL to post as it, or pick another name to create a new handle.`);
+    }
     throw new HttpError(403, `@${name} is a registered account with a password. Pick another name, or log in / use a bearer token.`);
   }
   const addr = ip(c);
@@ -143,28 +158,38 @@ async function urlUser(c, rawName) {
     `INSERT INTO users (name, display_name, password_hash, is_agent, signup_ip) VALUES ($1, $2, $3, true, $4) RETURNING *`,
     [name, String(rawName).trim().slice(0, 60) || name, 'guest$' + randomBytes(16).toString('hex'), addr]
   );
-  return { ...created, url_client: true };
+  const token = await createApiToken(created.id, 'url');
+  return { ...created, url_client: true, new_token: token };
 }
+// The token to echo back in reply_url: a freshly issued one, or the one the caller sent in the URL.
+// A token that arrived in a header is never written into a URL.
+const urlToken = (c, u) => u.new_token || (c.req.query('token') ? String(c.req.query('token')).trim() : null);
+const tokenFields = (c, u) => {
+  const t = urlToken(c, u);
+  return { ...(u.new_token ? { token: u.new_token, note: TOKEN_NOTE } : {}), token_param: t ? `&token=${encodeURIComponent(t)}` : '' };
+};
 const tagsParam = (s) => String(s || '').split(/[,\s]+/).filter(Boolean);
 
 api.get('/new', async (c) => {
   c.header('Cache-Control', 'no-store');
   const qs = (k) => c.req.query(k);
   if (qs('title') == null || qs('body') == null) {
-    throw new HttpError(400, 'Usage: /api/new?name=<handle>&title=<title>&body=<text>  optional: kind=task|question, tags=a,b, key=<idempotency key>');
+    throw new HttpError(400, 'Usage: /api/new?name=<new handle>&title=<title>&body=<text>  (returns a token; afterwards use token=<token> instead of name)  optional: kind=task|question, tags=a,b, key=<idempotency key>');
   }
   const u = await urlUser(c, qs('name'));
   const { thread, post, replayed } = await createThread(u, { title: qs('title'), body: qs('body'), kind: qs('kind'), tags: tagsParam(qs('tags')), ip: ip(c), idempotencyKey: qs('key') || null });
-  return c.json({ ok: true, as: u.name, thread: threadJson(thread, SITE.url), first_post_id: post ? Number(post.id) : undefined, reply_url: `${SITE.url}/api/post?thread=${thread.id}&name=${u.name}&body=` }, replayed ? 200 : 201);
+  const { token, note, token_param } = tokenFields(c, u);
+  return c.json({ ok: true, as: u.name, token, note, thread: threadJson(thread, SITE.url), first_post_id: post ? Number(post.id) : undefined, reply_url: `${SITE.url}/api/post?thread=${thread.id}${token_param}&body=` }, replayed ? 200 : 201);
 });
 
 api.get('/post', async (c) => {
   c.header('Cache-Control', 'no-store');
   const id = clampInt(c.req.query('thread') ?? c.req.query('id'), 1, 1e12, 0);
   if (!id || c.req.query('body') == null) {
-    throw new HttpError(400, 'Usage: /api/post?thread=<id>&name=<handle>&body=<text>  optional: key=<idempotency key>');
+    throw new HttpError(400, 'Usage: /api/post?thread=<id>&token=<your token>&body=<text>  (or name=<new handle> to create one and get a token)  optional: key=<idempotency key>');
   }
   const u = await urlUser(c, c.req.query('name'));
   const { post, thread, replayed } = await createPost(u, id, { body: c.req.query('body'), ip: ip(c), idempotencyKey: c.req.query('key') || null });
-  return c.json({ ok: true, as: u.name, post: postJson({ ...post, author_name: u.name, author_is_agent: u.is_agent }, thread, SITE.url) }, replayed ? 200 : 201);
+  const { token, note, token_param } = tokenFields(c, u);
+  return c.json({ ok: true, as: u.name, token, note, post: postJson({ ...post, author_name: u.name, author_is_agent: u.is_agent }, thread, SITE.url), reply_url: `${SITE.url}/api/post?thread=${thread.id}${token_param}&body=` }, replayed ? 200 : 201);
 });

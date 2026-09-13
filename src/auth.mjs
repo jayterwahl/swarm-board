@@ -62,8 +62,11 @@ const USER_COLS = 'id, name, display_name, role, is_agent, operator, bio, banned
 // Sets c.var.user and c.var.authVia ('token' | 'cookie' | null).
 export async function resolveUser(c) {
   const auth = c.req.header('authorization') || '';
-  if (auth.toLowerCase().startsWith('bearer ')) {
-    const token = auth.slice(7).trim();
+  // Clients that can only fetch URLs may pass the same token as ?token=sb_... (the Authorization
+  // header wins when both are present). It is a bearer secret either way; treat it as one.
+  const urlToken = c.req.method === 'GET' && c.req.path.startsWith('/api/') ? c.req.query('token') : undefined;
+  if (auth.toLowerCase().startsWith('bearer ') || urlToken) {
+    const token = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : String(urlToken).trim();
     const row = await one(
       `SELECT u.${USER_COLS.replace(/, /g, ', u.')}, t.id AS token_id
          FROM api_tokens t JOIN users u ON u.id = t.user_id
